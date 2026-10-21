@@ -4,6 +4,13 @@ import type { Vehicle } from './Vehicle'
 
 export type CameraMode = 'cockpit' | 'hood' | 'chase'
 
+/**
+ * Constant downward tilt of the driver's eye (radians). Real drivers look
+ * slightly down the road rather than dead level; without it the horizon sits
+ * dead centre and the lane right ahead - and the stop line - falls out of view.
+ */
+const COCKPIT_PITCH = -0.1
+
 const MODE_ORDER: CameraMode[] = ['cockpit', 'hood', 'chase']
 const MODE_LABEL: Record<CameraMode, string> = {
   cockpit: 'Driver seat',
@@ -86,7 +93,7 @@ export class CameraRig {
         vehicle.eyePosition(this.tmp)
         this.camera.position.copy(this.tmp)
         this.camera.rotation.set(
-          this.lookPitch,
+          this.lookPitch + COCKPIT_PITCH,
           heading + Math.PI + this.lookYaw,
           0,
           'YXZ',
@@ -94,12 +101,12 @@ export class CameraRig {
       } else {
         // Bonnet view: forward of the windscreen, level with the road.
         this.tmp
-          .set(0, 1.28, 1.95)
+          .set(0, 1.52, 1.95)
           .applyAxisAngle(THREE.Object3D.DEFAULT_UP, physics.yaw)
           .add(vehicle.group.position)
         this.camera.position.copy(this.tmp)
         this.camera.rotation.set(
-          this.lookPitch * 0.6,
+          this.lookPitch * 0.6 + COCKPIT_PITCH,
           heading + Math.PI + this.lookYaw,
           0,
           'YXZ',

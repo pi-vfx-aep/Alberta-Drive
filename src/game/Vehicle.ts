@@ -243,7 +243,7 @@ export class Vehicle {
     x: number,
     z: number,
     yaw: number,
-    private readonly cockpitOffset = new THREE.Vector3(0.36, 1.3, 0.08),
+    private readonly cockpitOffset = new THREE.Vector3(0.36, 1.44, 0.08),
   ) {
     this.physics = new VehiclePhysics(SEDAN, x, z, yaw)
     this.group.add(this.bodyGroup)

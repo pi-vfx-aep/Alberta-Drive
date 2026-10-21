@@ -79,6 +79,11 @@ Gamepads are supported: left stick steers, RT accelerates, LT brakes.
   stalks, pedals, gear lever, handbrake, seatbelt, wipers, horn, headlights.
 - **Three live mirrors** (rearview + both wings) rendered to texture on
   alternate frames; disabled on the Low graphics preset.
+- **Minimap** — a north-up, top-down navigation aid showing the road network,
+  school zones, signalised vs. stop-controlled junctions, both marked parking
+  targets, live AI traffic and pedestrians, and a bearing line to the active
+  destination. The roads are baked into an offscreen layer once, so each frame
+  costs one `drawImage` plus a few primitives.
 - Custom bicycle-model vehicle dynamics: longitudinal/lateral decomposition,
   grip-limited lateral damping (understeer), speed-sensitive steering,
   automatic gearbox display, drag, rolling resistance, weight-transfer body
@@ -86,9 +91,10 @@ Gamepads are supported: left stick steers, RT accelerates, LT brakes.
 - Surface grip varies with road vs. off-road and with weather
   (clear / fog / rain / snow).
 - A built Alberta-style town: right-hand traffic, metric limits, Canadian
-  signage, signalised intersections, four-way stops, a school-zone 30 km/h
-  overlay, crosswalks, a railway crossing, a parking lot with a marked
-  parallel space, and a 100 km/h prairie highway.
+  signage, signalised intersections with mast-arm signal heads hung over the
+  approach lanes, four-way stops, a school-zone 30 km/h overlay, crosswalks, a
+  railway crossing, a driving-school lot with an entrance onto South Boulevard,
+  painted parallel-parking bays, and a 100 km/h prairie highway.
 - AI traffic on three routes that obeys signals and stop signs, keeps
   following distance and yields; pedestrians including a signalised crosswalk
   crosser.
@@ -160,6 +166,7 @@ src/
     CameraRig.ts         Cockpit / bonnet / follow cameras and mouse look
     Traffic.ts           AI cars and pedestrians
     Instructor.ts        Event handling, feedback text and scoring
+    Minimap.ts           North-up navigation map (static baked layer + live overlay)
     Sound.ts             Procedural Web Audio engine
 ```
 

@@ -117,6 +117,7 @@ export class UI {
         <div class="hud-lamps" id="hud-lamps"></div>
       </div>
       <div class="hud-c"><div class="hud-instructor" id="hud-instructor"></div></div>
+      <div class="hud-map"><canvas id="minimap" width="190" height="190" aria-label="Minimap"></canvas></div>
       <div class="hud-keys">${HUD_KEYS.map(
         (k) =>
           `<span><kbd>${keyLabel(this.settings.bindings[k.action] ?? defaultBindings()[k.action])}</kbd> ${k.hint}</span>`,
@@ -452,6 +453,7 @@ export class UI {
 
     const game = new Game({
       canvas: this.canvas,
+      minimap: this.$<HTMLCanvasElement>('#minimap'),
       settings: this.settings,
       lesson,
       weather,

@@ -3,6 +3,7 @@ import { World, LANE_OFFSET, type RoadSegment, type StopPoint } from './World'
 import { Vehicle, type BeamMode, type SignalSide, type VisualState } from './Vehicle'
 import { CameraRig } from './CameraRig'
 import { TrafficSystem } from './Traffic'
+import { Minimap } from './Minimap'
 import { Instructor } from './Instructor'
 import { Input } from '../systems/Input'
 import { Sound } from './Sound'
@@ -35,6 +36,8 @@ const START_MINUTES: Record<TimeOfDay, number> = {
 
 export interface GameOptions {
   canvas: HTMLCanvasElement
+  /** Optional HUD minimap surface; omitted when the UI does not provide one. */
+  minimap?: HTMLCanvasElement | null
   settings: Settings
   lesson: LessonDef | null
   weather: WeatherKind
@@ -91,7 +94,7 @@ const MOCK_ROUTE: ExaminerStep[] = [
 
 /** Free-drive points of interest for the simple navigation prompt. */
 const POIS: { name: string; x: number; z: number }[] = [
-  { name: 'Driving school lot', x: -30, z: -30 },
+  { name: 'Driving school lot', x: -82.5, z: -30 },
   { name: 'Downtown (Main Street)', x: 0, z: 0 },
   { name: 'School zone (North Blvd)', x: -30, z: 60 },
   { name: 'Prairie Highway', x: 0, z: 200 },
@@ -112,6 +115,8 @@ export class Game {
   private readonly traffic: TrafficSystem
   private readonly input: Input
   private readonly sound: Sound
+  private readonly minimap: Minimap | null
+  private goal: { x: number; z: number; name: string } | null = null
   private readonly instructor = new Instructor()
   private readonly hud: HudState
   private readonly sun: THREE.DirectionalLight
@@ -227,6 +232,7 @@ export class Game {
 
     this.input = new Input(options.canvas)
     this.sound = new Sound(options.settings.volume)
+    this.minimap = options.minimap ? new Minimap(options.minimap, this.world, POIS) : null
     this.rig = new CameraRig(
       options.canvas.clientWidth / Math.max(1, options.canvas.clientHeight),
       options.settings.fov,
@@ -353,6 +359,10 @@ export class Game {
     }
     this.instructor.begin(this.options.lesson, this.options.settings.instructorLevel)
     if (this.options.lesson?.id === 'mock5') this.announce(MOCK_ROUTE[0].text)
+
+    // Restarting from the pause menu must actually resume the loop. setPaused
+    // is a no-op when already running, and `finished` was cleared above.
+    this.setPaused(false)
   }
 
   dispose(): void {
@@ -363,6 +373,7 @@ export class Game {
     document.removeEventListener('pointerlockchange', this.onPointerLockChange)
     this.input.dispose()
     this.sound.dispose()
+    this.minimap?.dispose()
     this.traffic.dispose()
     this.vehicle.dispose()
     this.world.dispose()
@@ -546,6 +557,20 @@ export class Game {
 
     this.renderer.render(this.scene, this.rig.camera)
     this.options.onHud(this.buildHud())
+    this.drawMinimap()
+  }
+
+  private drawMinimap(): void {
+    if (!this.minimap) return
+    const p = this.vehicle.physics
+    this.minimap.draw(
+      p.x,
+      p.z,
+      p.yaw,
+      this.traffic.vehicleStates(),
+      this.traffic.pedestrianStates(),
+      this.goal,
+    )
   }
 
   private visualState(): VisualState {
@@ -877,6 +902,7 @@ export class Game {
   private updateDestination(): void {
     const p = this.vehicle.physics
     const lesson = this.options.lesson
+    this.goal = null
 
     if (lesson?.id === 'mock5' && this.examinerTimer > 0) {
       this.hud.destination = 'Examiner'
@@ -896,6 +922,7 @@ export class Game {
       }
       this.hud.destination = best.name
       this.hud.distance = Math.round(bestDist)
+      this.goal = { x: best.x, z: best.z, name: best.name }
       return
     }
 
@@ -906,22 +933,34 @@ export class Game {
         break
       case 'stopsign': {
         let bestDist = Infinity
+        let bestX = 0
+        let bestZ = 0
         for (const sp of this.world.stopPoints) {
           if (sp.kind !== 'stop') continue
-          bestDist = Math.min(bestDist, Math.hypot(sp.x - p.x, sp.z - p.z))
+          const d = Math.hypot(sp.x - p.x, sp.z - p.z)
+          if (d < bestDist) {
+            bestDist = d
+            bestX = sp.x
+            bestZ = sp.z
+          }
         }
         this.hud.destination = 'Nearest stop sign'
         this.hud.distance = Math.round(bestDist)
+        if (Number.isFinite(bestDist)) {
+          this.goal = { x: bestX, z: bestZ, name: 'Nearest stop sign' }
+        }
         break
       }
       case 'lanes':
         this.hud.destination = 'Main Street (4 lanes)'
         this.hud.distance = Math.round(Math.abs(p.z - 0) + Math.abs(p.x - 0) * 0.2)
+        this.goal = { x: 0, z: 0, name: 'Main Street' }
         break
       case 'parking': {
         const space = this.world.parallelSpace
         this.hud.destination = 'Parallel parking space'
         this.hud.distance = Math.round(Math.hypot(space.x - p.x, space.z - p.z))
+        this.goal = { x: space.x, z: space.z, name: 'Parking space' }
         break
       }
       default:
@@ -953,17 +992,32 @@ export class Game {
     }
     if (!best) return
 
+    // A very short segment would invert the clamp range (from + 12 > to - 12)
+    // and drop the car at a nonsense position; widen it back out.
+    const lo = Math.min(best.from + 12, best.to - 12)
+    const hi = Math.max(best.from + 12, best.to - 12)
+
     let x: number
     let z: number
-    let yaw: number
+    const yaw = best.axis === 'z' ? 0 : Math.PI / 2 // northbound / eastbound
     if (best.axis === 'z') {
       x = best.coord - LANE_OFFSET
-      z = THREE.MathUtils.clamp(p.z, best.from + 12, best.to - 12)
-      yaw = 0 // northbound, right-hand lane
+      z = THREE.MathUtils.clamp(p.z, lo, hi)
     } else {
       z = best.coord + LANE_OFFSET
-      x = THREE.MathUtils.clamp(p.x, best.from + 12, best.to - 12)
-      yaw = Math.PI / 2 // eastbound, right-hand lane
+      x = THREE.MathUtils.clamp(p.x, lo, hi)
+    }
+
+    // Step along the road until the spot is clear, so recovery can never
+    // strand the car on the railway crossing or embedded in a kerb.
+    for (const step of [0, 14, -14, 28, -28, 42, -42, 56, -56, 70, -70, 84, -84]) {
+      const tx = best.axis === 'z' ? x : THREE.MathUtils.clamp(x + step, lo, hi)
+      const tz = best.axis === 'z' ? THREE.MathUtils.clamp(z + step, lo, hi) : z
+      if (this.isClearOfColliders(tx, tz, p.cfg.radius)) {
+        x = tx
+        z = tz
+        break
+      }
     }
 
     this.vehicle.respawn(x, z, yaw)
@@ -971,6 +1025,21 @@ export class Game {
     this.handbrake = true
     this.announce(`Recovered onto ${best.name}. Parking brake is set.`)
     this.sound.click()
+  }
+
+  /** True when a circle of `radius` centred on (x, z) overlaps no collider. */
+  private isClearOfColliders(x: number, z: number, radius: number): boolean {
+    for (const box of this.world.colliders) {
+      if (
+        x + radius > box.minX &&
+        x - radius < box.maxX &&
+        z + radius > box.minZ &&
+        z - radius < box.maxZ
+      ) {
+        return false
+      }
+    }
+    return true
   }
 
   private toggleIgnition(): void {

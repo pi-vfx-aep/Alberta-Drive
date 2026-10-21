@@ -522,7 +522,26 @@ ul.tips li {
   bottom: 92px;
   left: 50%;
   transform: translateX(-50%);
-  width: min(720px, 82vw);
+  /* Leave a lane for the minimap on the right so the two never overlap. */
+  width: min(720px, calc(100vw - 460px));
+  min-width: 240px;
+}
+
+.hud-map {
+  position: absolute;
+  right: 18px;
+  bottom: 18px;
+  line-height: 0;
+}
+
+.hud-map canvas {
+  width: 190px;
+  height: 190px;
+  border-radius: 50%;
+  background: rgba(12, 16, 20, 0.55);
+  box-shadow:
+    0 6px 22px rgba(0, 0, 0, 0.45),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.06);
 }
 
 .hud-dest {
@@ -722,6 +741,7 @@ ul.tips li {
 .hud.immersive .hud-tl,
 .hud.immersive .hud-keys,
 .hud.immersive .hud-limit,
+.hud.immersive .hud-map,
 .hud.immersive .hud-score {
   display: none;
 }

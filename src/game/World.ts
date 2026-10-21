@@ -360,8 +360,11 @@ export class World {
 
   /** Parallel-parking target: centre and footprint of the marked space. */
   readonly parallelSpace = { x: -45, z: -3.6, length: 6.4, width: 2.2 }
-  /** Reverse-parking bay inside the lot. */
-  readonly reverseSpace = { x: -30, z: -30, length: 5, width: 2.6 }
+  /**
+   * Reverse-parking bay inside the driving-school lot. Matches the painted
+   * stalls, which sit along the lot's north edge.
+   */
+  readonly reverseSpace = { x: -82.5, z: -14.2, length: 5, width: 2.6 }
 
   private readonly lampMeshes: {
     nsRed: THREE.Mesh[]
@@ -377,6 +380,7 @@ export class World {
   constructor() {
     this.buildRoads()
     this.buildIntersections()
+    this.buildParallelSpace()
     this.buildTown()
     this.buildNature()
     this.buildRailway()
@@ -663,6 +667,32 @@ export class World {
     }
   }
 
+  /**
+   * Paint the parallel-parking bay on the Main Street kerb.
+   *
+   * Without markings the practice space is invisible from the driver's seat,
+   * which makes the parking lesson a memory test rather than a driving test.
+   */
+  private buildParallelSpace(): void {
+    const s = this.parallelSpace
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0xf2f4f7,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -2,
+    })
+    this.disposables.push(mat)
+
+    for (const side of [-1, 1]) {
+      const bar = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.02, s.width + 0.4), mat)
+      bar.position.set(s.x + side * (s.length / 2), 0.06, s.z)
+      this.group.add(bar)
+    }
+    const kerbLine = new THREE.Mesh(new THREE.BoxGeometry(s.length, 0.02, 0.16), mat)
+    kerbLine.position.set(s.x, 0.06, s.z - s.width / 2)
+    this.group.add(kerbLine)
+  }
+
   private addCrosswalk(
     x: number,
     z: number,
@@ -718,27 +748,52 @@ export class World {
     this.group.add(group)
   }
 
+  /**
+   * Signal assembly for one approach.
+   *
+   * Built in the pole group's local space, where local +Z faces the oncoming
+   * driver (the group carries `a.yaw`). For all four approaches the roadway
+   * lies along local **-X**, so a single mast-arm shape works everywhere: the
+   * pole stands on the kerb corner and the arm carries the head out over the
+   * approach lane, exactly 4.6 m clear of it. Hanging the head over the lane
+   * rather than tucked beside the kerb is what makes it readable from far back.
+   */
   private addSignalHead(a: {
     axis: 'ns' | 'ew'
     headX: number
     headZ: number
     yaw: number
   }): void {
-    const postMat = new THREE.MeshStandardMaterial({
+    const metalMat = new THREE.MeshStandardMaterial({
       color: 0x3c4043,
-      roughness: 0.7,
-      metalness: 0.3,
+      roughness: 0.65,
+      metalness: 0.4,
     })
     const housingMat = new THREE.MeshStandardMaterial({ color: 0x24272b, roughness: 0.8 })
-    this.disposables.push(postMat, housingMat)
+    this.disposables.push(metalMat, housingMat)
 
     const group = new THREE.Group()
-    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 5.0, 8), postMat)
-    post.position.y = 2.5
+
+    // Kerb pole.
+    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.13, 6.4, 10), metalMat)
+    post.position.y = 3.2
     group.add(post)
 
-    const housing = new THREE.Mesh(new THREE.BoxGeometry(0.5, 1.4, 0.35), housingMat)
-    housing.position.y = 4.4
+    // Mast arm reaching out over the lane, plus a short counterweight behind.
+    const arm = new THREE.Mesh(new THREE.BoxGeometry(4.6, 0.2, 0.2), metalMat)
+    arm.position.set(-2.3, 6.1, 0)
+    group.add(arm)
+    const stub = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.2, 0.2), metalMat)
+    stub.position.set(0.6, 6.1, 0)
+    group.add(stub)
+
+    // Hanger from the arm down to the head.
+    const hanger = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.55, 0.1), metalMat)
+    hanger.position.set(-4.6, 5.75, 0)
+    group.add(hanger)
+
+    const housing = new THREE.Mesh(new THREE.BoxGeometry(0.52, 1.45, 0.36), housingMat)
+    housing.position.set(-4.6, 4.78, 0)
     group.add(housing)
 
     const colours: Record<'red' | 'amber' | 'green', number> = {
@@ -758,8 +813,8 @@ export class World {
         roughness: 0.4,
       })
       this.disposables.push(mat)
-      const lamp = new THREE.Mesh(new THREE.CircleGeometry(0.16, 16), mat)
-      lamp.position.set(0, 4.82 - i * 0.42, 0.19)
+      const lamp = new THREE.Mesh(new THREE.CircleGeometry(0.17, 16), mat)
+      lamp.position.set(-4.6, 5.2 - i * 0.44, 0.2)
       group.add(lamp)
       this.lampMeshes[buckets[i]].push(lamp)
     })
@@ -869,7 +924,9 @@ export class World {
     lot.position.set((minX + maxX) / 2, 0.03, (minZ + maxZ) / 2)
     this.group.add(lot)
 
-    // Perimeter curb colliders keep the car inside the block.
+    // Perimeter curb colliders keep the car inside the block. The south curb
+    // is split to leave an entrance onto South Boulevard, otherwise the lot
+    // is sealed by its own kerbs and can never be driven into.
     this.colliders.push({
       minX: minX - 2,
       maxX: minX,
@@ -886,6 +943,13 @@ export class World {
     })
     this.colliders.push({
       minX: minX - 2,
+      maxX: -88,
+      minZ: minZ - 2,
+      maxZ: minZ,
+      name: 'curb',
+    })
+    this.colliders.push({
+      minX: -77,
       maxX: maxX + 2,
       minZ: minZ - 2,
       maxZ: minZ,
@@ -898,6 +962,16 @@ export class World {
       maxZ: maxZ + 2,
       name: 'curb',
     })
+
+    // Driveway apron joining the entrance down to the boulevard.
+    const apron = new THREE.Mesh(
+      new THREE.PlaneGeometry(11, Math.max(2, minZ - -55)),
+      new THREE.MeshStandardMaterial({ color: 0x33363b, roughness: 0.95 }),
+    )
+    apron.rotation.x = -Math.PI / 2
+    apron.position.set(-82.5, 0.03, (minZ + -55) / 2)
+    this.group.add(apron)
+    this.disposables.push(apron.material as THREE.Material)
 
     // Painted reverse-parking bays along the north edge.
     const lineMat = new THREE.MeshBasicMaterial({

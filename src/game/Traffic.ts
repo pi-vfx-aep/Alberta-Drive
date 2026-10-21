@@ -548,6 +548,14 @@ export class TrafficSystem {
     }))
   }
 
+  /** Positions of AI vehicles, for the minimap. */
+  vehicleStates(): { x: number; z: number }[] {
+    return this.cars.map((car) => ({
+      x: car.group.position.x,
+      z: car.group.position.z,
+    }))
+  }
+
   dispose(): void {
     for (const car of this.cars) {
       car.group.traverse((obj) => {
