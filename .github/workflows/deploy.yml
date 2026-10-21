@@ -1,0 +1,65 @@
+name: Deploy to GitHub Pages
+
+# Runs on every push to `main`. Push from VSCode and the public site updates
+# itself in about a minute. No manual build step, no FTP.
+#
+# One-time setup (see README -> "Publishing"):
+#   1. Push this repo to GitHub.
+#   2. Repo -> Settings -> Pages -> Source: "GitHub Actions".
+#   3. Actions tab -> enable workflows if prompted.
+
+on:
+  push:
+    branches: [main]
+  # Lets you redeploy from the Actions tab without pushing a commit.
+  workflow_dispatch:
+
+# Only one deploy may run at a time, and an in-flight deploy is superseded by
+# a newer push rather than queueing behind it.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      # Fail the deploy rather than publish something that does not compile.
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -189,6 +189,65 @@ npm run preview   # serve dist/ locally
 `base: './'` in `vite.config.ts` makes the build path-relative, so `dist/` can
 be hosted from any subdirectory.
 
+## Publishing and updating
+
+The repo ships with `.github/workflows/deploy.yml`, which typechecks, builds
+and deploys to **GitHub Pages** on every push to `main`. You never run a build
+or upload a file by hand: edit in VSCode, commit, push, and the public site
+refreshes itself in about a minute.
+
+### One-time setup
+
+1. Create a repo on GitHub and push:
+
+   ```bash
+   git remote add origin https://github.com/<you>/<repo>.git
+   git push -u origin main
+   ```
+
+   Or use VSCode's **Source Control** panel: add a remote, then Publish.
+
+2. On GitHub, open **Settings -> Pages -> Build and deployment -> Source** and
+   choose **GitHub Actions**.
+
+3. If the **Actions** tab says workflows are disabled, enable them.
+
+Your game will be live at `https://<you>.github.io/<repo>/`. The workflow runs
+`npm run typecheck` first, so a broken build fails loudly instead of publishing
+a dead page.
+
+### Your everyday update loop
+
+1. Edit files in VSCode.
+2. Optionally check locally: `npm run dev` (http://localhost:5173/).
+3. Source Control panel: **Commit**, then **Sync/Push**. Or from a terminal:
+
+   ```bash
+   git add -A
+   git commit -m "Describe the change"
+   git push
+   ```
+
+4. Wait ~1 minute, then hard-refresh the public URL (`Ctrl+F5`).
+
+### Why GitHub Pages
+
+Free, no bandwidth cap at this size, no account beyond GitHub, and it updates
+on `git push`. If you later want a custom domain, add a `CNAME` file to
+`public/` and set it under **Settings -> Pages -> Custom domain**; the build
+does not change.
+
+### Alternatives
+
+| Host             | Trigger    | Notes                                                                         |
+| ---------------- | ---------- | ----------------------------------------------------------------------------- |
+| Cloudflare Pages | `git push` | Build command `npm run build`, output `dist`. No Actions file needed.         |
+| Netlify          | `git push` | Same settings; dragging `dist/` onto the site also works for a manual deploy. |
+| Vercel           | `git push` | Framework preset "Vite", no config needed.                                    |
+
+Any of these replace the GitHub Actions job. The build itself is always
+`npm run build` producing `dist/`.
+
 ## License
 
 MIT — see [LICENSE](./LICENSE).
