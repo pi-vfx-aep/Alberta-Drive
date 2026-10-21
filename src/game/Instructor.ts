@@ -105,6 +105,18 @@ export class Instructor {
     if (!note) return
 
     const { id, severity, text, cooldown } = note
+
+    // Rate-limit the whole event, not just the spoken line.
+    //
+    // This used to sit at the *bottom* of the method, below the scoring block,
+    // so the cooldown only suppressed the HUD message. A condition that holds
+    // for even one second - driving over the practice lot, or sitting beside a
+    // facing stop point - deducted score on every one of the 60 simulation
+    // steps, which is why faults appeared to fire at random and the score
+    // collapsed. One logical event should now cost one penalty.
+    if (this.cooldowns.has(id)) return
+    this.cooldowns.set(id, cooldown)
+
     this.counts.set(id, (this.counts.get(id) ?? 0) + 1)
 
     if (severity !== 'info') {
@@ -119,11 +131,7 @@ export class Instructor {
     if (this.level === 'exam') return
 
     // Beginner hears the good news too; intermediate only hears about problems.
-    const isPraise = severity === 'info'
-    if (isPraise && this.level !== 'beginner') return
-
-    if (this.cooldowns.has(id)) return
-    this.cooldowns.set(id, cooldown)
+    if (severity === 'info' && this.level !== 'beginner') return
 
     this.current = { text, severity }
     this.currentTimer = severity === 'info' ? 4 : 7

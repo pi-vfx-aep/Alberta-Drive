@@ -28,6 +28,9 @@ export interface StopPoint {
   z: number
   /** 'ns' = travelling north/south, 'ew' = travelling east/west. */
   axis: 'ns' | 'ew'
+  /** Direction of travel for the approach this point belongs to, in world XZ. */
+  dirX: number
+  dirZ: number
   kind: 'light' | 'stop'
   stopX: boolean
   stopZ: boolean
@@ -183,6 +186,27 @@ function asphaltTexture(): THREE.CanvasTexture {
       ctx.fillStyle = `rgba(${shade},${shade},${shade + 4},0.6)`
       ctx.fillRect(Math.random() * 128, Math.random() * 128, 3, 3)
     }
+  })
+}
+
+/**
+ * Prairie grass, tiled across the ground plane.
+ *
+ * A single flat colour reads as painted card once the sun starts casting
+ * highlights across it. Dithered speckle of three greens gives the plane
+ * surface variation at zero runtime cost - one 128 px canvas, repeated.
+ */
+function grassTexture(): THREE.CanvasTexture {
+  return canvasTexture(128, 128, (ctx) => {
+    ctx.fillStyle = '#5d7a4a'
+    ctx.fillRect(0, 0, 128, 128)
+    const blades = ['#54703f', '#668750', '#496236', '#6d8a55']
+    for (let i = 0; i < 1400; i++) {
+      ctx.fillStyle = blades[(Math.random() * blades.length) | 0]
+      ctx.globalAlpha = 0.35 + Math.random() * 0.4
+      ctx.fillRect(Math.random() * 128, Math.random() * 128, 2, 3)
+    }
+    ctx.globalAlpha = 1
   })
 }
 
@@ -356,10 +380,19 @@ export class World {
   readonly stopPoints: StopPoint[] = []
   readonly crosswalks: Crosswalk[] = []
   readonly lights = new TrafficLights()
-  readonly spawn = { x: -3.6, z: -40, yaw: 0 }
+  /**
+   * Starting position: the centre of the northbound lane on Central Avenue
+   * (road coord 0 minus LANE_OFFSET), clear of both the crosswalk and the
+   * intersection behind.
+   */
+  readonly spawn = { x: -1.9, z: -40, yaw: 0 }
 
   /** Parallel-parking target: centre and footprint of the marked space. */
   readonly parallelSpace = { x: -45, z: -3.6, length: 6.4, width: 2.2 }
+
+  /** Footprint of the driving-school practice lot, if it has been built. */
+  private practiceLot: { minX: number; maxX: number; minZ: number; maxZ: number } | null =
+    null
   /**
    * Reverse-parking bay inside the driving-school lot. Matches the painted
    * stalls, which sit along the lot's north edge.
@@ -546,13 +579,22 @@ export class World {
 
     for (const texture of baseTextures.values()) texture.dispose()
 
-    // Ground plane under everything.
-    const groundMat = new THREE.MeshStandardMaterial({ color: 0x5d7a4a, roughness: 1 })
+    // Ground plane under everything. Tiled prairie grass rather than a flat
+    // green wash, so the terrain reads as ground once the sun rakes across it.
+    const grass = grassTexture()
+    grass.wrapS = grass.wrapT = THREE.RepeatWrapping
+    grass.repeat.set(160, 160) // 800 m plane / 5 m per tile
+    const groundMat = new THREE.MeshStandardMaterial({
+      map: grass,
+      color: 0xffffff,
+      roughness: 1,
+    })
     const ground = new THREE.Mesh(new THREE.PlaneGeometry(800, 800), groundMat)
     ground.rotation.x = -Math.PI / 2
     ground.position.y = -0.02
+    ground.receiveShadow = true
     this.group.add(ground)
-    this.disposables.push(groundMat)
+    this.disposables.push(groundMat, grass)
   }
 
   private buildIntersections(): void {
@@ -612,6 +654,8 @@ export class World {
             z: z - 9.4,
             headX: x - 6.5,
             headZ: z - 9.4,
+            dirX: 0,
+            dirZ: 1,
             yaw: Math.PI,
           },
           {
@@ -620,6 +664,8 @@ export class World {
             z: z + 9.4,
             headX: x + 6.5,
             headZ: z + 9.4,
+            dirX: 0,
+            dirZ: -1,
             yaw: 0,
           },
           {
@@ -628,6 +674,8 @@ export class World {
             z: z + LANE_OFFSET,
             headX: x - 9.4,
             headZ: z + 6.5,
+            dirX: 1,
+            dirZ: 0,
             yaw: -Math.PI / 2,
           },
           {
@@ -636,6 +684,8 @@ export class World {
             z: z - LANE_OFFSET,
             headX: x + 9.4,
             headZ: z - 6.5,
+            dirX: -1,
+            dirZ: 0,
             yaw: Math.PI / 2,
           },
         ]
@@ -645,6 +695,8 @@ export class World {
             x: a.x,
             z: a.z,
             axis: a.axis,
+            dirX: a.dirX,
+            dirZ: a.dirZ,
             kind: kind === 'light' ? 'light' : 'stop',
             stopX: a.axis === 'ns',
             stopZ: a.axis === 'ew',
@@ -915,6 +967,7 @@ export class World {
   }
 
   private buildParkingLot(minX: number, minZ: number, maxX: number, maxZ: number): void {
+    this.practiceLot = { minX, maxX, minZ, maxZ }
     const mat = new THREE.MeshStandardMaterial({ map: asphaltTexture(), roughness: 0.95 })
     this.disposables.push(mat)
     const w = maxX - minX
@@ -1186,6 +1239,21 @@ export class World {
 
   isOnRoad(x: number, z: number): boolean {
     return this.roads.some((road) => this.covers(road, x, z))
+  }
+
+  /**
+   * Surfaces the car may legitimately be on.
+   *
+   * Roads plus the practice lot. `isOnRoad` alone is too narrow: the lot is
+   * asphalt you are meant to drive on, and treating it as off-road made the
+   * instructor report "you have left the road" for the whole time you were
+   * practising parking.
+   */
+  isDrivable(x: number, z: number): boolean {
+    if (this.isOnRoad(x, z)) return true
+    const lot = this.practiceLot
+    if (!lot) return false
+    return x > lot.minX && x < lot.maxX && z > lot.minZ && z < lot.maxZ
   }
 
   /** Friction multiplier for the surface under the car. */

@@ -51,6 +51,10 @@ interface StopState {
   armed: boolean
   served: boolean
   timer: number
+  /** The car was lined up on this approach while still short of the line. */
+  approached: boolean
+  /** The stop line has already been crossed on this pass. */
+  crossed: boolean
 }
 
 interface ExaminerStep {
@@ -100,6 +104,11 @@ const POIS: { name: string; x: number; z: number }[] = [
   { name: 'Prairie Highway', x: 0, z: 200 },
 ]
 
+/** Smallest signed difference between two angles, in radians. */
+function wrapAngle(a: number): number {
+  return Math.atan2(Math.sin(a), Math.cos(a))
+}
+
 /**
  * The whole playable game: renderer, world, vehicle, traffic, rules and HUD.
  *
@@ -123,6 +132,12 @@ export class Game {
   private readonly fill: THREE.DirectionalLight
   private readonly hemi: THREE.HemisphereLight
   private readonly precipitation: THREE.Points | null
+  private sky!: THREE.Mesh
+  private skyMaterial!: THREE.ShaderMaterial
+
+  /** Image-based lighting generated from the sky dome, for PBR reflections. */
+  private envGen: THREE.PMREMGenerator | null = null
+  private envTarget: THREE.WebGLRenderTarget | null = null
 
   private readonly stopStates: StopState[]
   private accumulator = 0
@@ -149,7 +164,11 @@ export class Game {
   // --- rule detection state ---
   private overSpeedTimer = 0
   private wrongWayTimer = 0
+  private offRoadTimer = 0
   private turnAccum = 0
+  private lastTurnTime = -99
+  private turnSide: 'left' | 'right' | 'the' = 'the'
+  private turnSignalled = false
   private prevLane: number | null = null
   private lastLookTime = -99
   private moveOffDone = false
@@ -196,6 +215,11 @@ export class Game {
     this.scene.background = new THREE.Color()
     this.scene.fog = new THREE.Fog(0xbfd3e6, 90, 460)
 
+    this.buildSky()
+    if (preset !== 'low') {
+      this.envGen = new THREE.PMREMGenerator(this.renderer)
+    }
+
     this.hemi = new THREE.HemisphereLight(0xcfe2ff, 0x5c6b4a, 0.95)
     this.scene.add(this.hemi)
 
@@ -206,7 +230,11 @@ export class Game {
 
     this.sun = new THREE.DirectionalLight(0xfff2df, 1.7)
     this.sun.castShadow = preset !== 'low'
-    this.sun.shadow.mapSize.set(2048, 2048)
+    // Tighter, crisper shadows on the higher presets without adding draw calls.
+    this.sun.shadow.mapSize.set(
+      preset === 'high' ? 4096 : 2048,
+      preset === 'high' ? 4096 : 2048,
+    )
     this.sun.shadow.camera.near = 1
     this.sun.shadow.camera.far = 160
     const extent = 48
@@ -242,6 +270,8 @@ export class Game {
       armed: false,
       served: false,
       timer: 0,
+      approached: false,
+      crossed: false,
     }))
 
     this.precipitation = this.buildPrecipitation(options.weather)
@@ -344,8 +374,13 @@ export class Game {
     this.elapsed = 0
     this.overSpeedTimer = 0
     this.wrongWayTimer = 0
+    this.offRoadTimer = 0
     this.turnAccum = 0
+    this.turnSide = 'the'
+    this.turnSignalled = false
+    this.lastTurnTime = -99
     this.prevLane = null
+    this.lastLookTime = -99
     this.moveOffDone = false
     this.wasMoving = false
     this.stoppedTimer = 0
@@ -356,6 +391,8 @@ export class Game {
       state.armed = false
       state.served = false
       state.timer = 0
+      state.approached = false
+      state.crossed = false
     }
     this.instructor.begin(this.options.lesson, this.options.settings.instructorLevel)
     if (this.options.lesson?.id === 'mock5') this.announce(MOCK_ROUTE[0].text)
@@ -374,6 +411,10 @@ export class Game {
     this.input.dispose()
     this.sound.dispose()
     this.minimap?.dispose()
+    this.sky.geometry.dispose()
+    this.skyMaterial.dispose()
+    this.envTarget?.dispose()
+    this.envGen?.dispose()
     this.traffic.dispose()
     this.vehicle.dispose()
     this.world.dispose()
@@ -555,6 +596,10 @@ export class Game {
 
     if (this.precipitation) this.updatePrecipitation(dt)
 
+    // The dome is centred on the eye so it always fills the background without
+    // the camera ever reaching its wall.
+    this.sky.position.copy(this.rig.camera.position)
+
     this.renderer.render(this.scene, this.rig.camera)
     this.options.onHud(this.buildHud())
     this.drawMinimap()
@@ -625,48 +670,73 @@ export class Game {
       const dz = sp.z - p.z
       const dist = Math.hypot(dx, dz)
 
-      if (dist > 22) {
+      if (dist > 24) {
         state.armed = false
         state.served = false
         state.timer = 0
+        state.approached = false
+        state.crossed = false
         continue
       }
 
-      if (dist < 7.5) {
-        state.armed = true
-        if (p.speed < 0.5) {
-          state.timer += dt
-          if (state.timer >= 0.35 && !state.served) {
-            state.served = true
-            if (sp.kind === 'stop') this.instructor.handle({ type: 'properStop' })
+      // Gate every check on actually being lined up with this approach.
+      //
+      // Two things matter here and neither is radial distance. The facing stop
+      // point of a two-way street is only ~3.8 m away, so a plain radius test
+      // armed it as you drove past in the opposite lane and reported a
+      // phantom rolling stop every single time you drove through. And a car
+      // travelling crosswise must never be judged at all, so the approach
+      // direction is checked too.
+      const ahead = dx * fx + dz * fz
+      const lateral = Math.abs(dx * -fz + dz * fx)
+      const travelling = fx * sp.dirX + fz * sp.dirZ
+      const inApproach = lateral < 3.4 && travelling > 0.45
+
+      if (sp.kind === 'stop') {
+        // In the stopping zone: close to the bar, still ahead of it, and
+        // committed to this approach.
+        if (dist < 7.5 && ahead > -2 && inApproach) {
+          state.armed = true
+          if (p.speed < 0.5) {
+            state.timer += dt
+            if (state.timer >= 0.35 && !state.served) {
+              state.served = true
+              this.instructor.handle({ type: 'properStop' })
+            }
+          } else {
+            state.timer = 0
           }
         } else {
           state.timer = 0
+          // Rolled on past the line without ever stopping.
+          if (state.armed && !state.served && ahead < -1) {
+            state.armed = false
+            state.served = true
+            this.instructor.handle({ type: 'failedStop' })
+          }
         }
-      } else if (state.armed && !state.served) {
-        state.armed = false
-        state.served = true
-        if (sp.kind === 'stop') this.instructor.handle({ type: 'failedStop' })
-      }
-
-      if (sp.kind === 'light') {
-        const ahead = dx * fx + dz * fz
-        const lateral = Math.abs(dx * -fz + dz * fx)
-        if (lateral < 4.5 && ahead > -2.5 && ahead < 8) {
+      } else if (inApproach && Math.abs(ahead) < 18) {
+        // Signals: judge the crossing of the stop line, not the approach.
+        // The old test fired while a car was still several metres short of
+        // the line and merely braking toward a red - which is exactly what a
+        // driver is supposed to do.
+        if (ahead > 2) {
+          state.approached = true
+          state.crossed = false
+        }
+        if (state.approached && !state.crossed && ahead <= 0.3 && p.speed > 1) {
+          state.crossed = true
           const phase = this.world.lights.for(sp.axis)
-          // Entering the intersection while the light is still red.
-          if (phase === 'red' && ahead > 0.5 && p.speed > 3) {
+          if (phase === 'red') {
             this.instructor.handle({ type: 'redLight' })
-          } else if (
-            phase === 'yellow' &&
-            ahead < -0.5 &&
-            p.speed > 7 &&
-            this.input.brake < 0.15
-          ) {
+          } else if (phase === 'yellow' && speedKmh > 7 && this.input.brake < 0.15) {
             // Coasting through a yellow that was not even attempted.
             this.instructor.handle({ type: 'yellowLightRun' })
           }
         }
+      } else {
+        state.approached = false
+        state.crossed = false
       }
     }
 
@@ -704,16 +774,30 @@ export class Game {
 
     // --- turns ---
     if (p.speed > 2 && Math.abs(p.steer) > 0.25) {
-      this.turnAccum += Math.abs(p.yaw - this.lastTurnYaw)
+      // Wrap-safe yaw delta: a raw subtraction reports a ~6 rad swing whenever
+      // the heading flips between +PI and -PI, which fired a phantom turn.
+      if (this.turnAccum === 0) {
+        // Latch the indicator at the moment the turn actually begins, so an
+        // auto-cancel mid-turn is not reported as "no signal".
+        this.turnSide =
+          this.signal === 'left' ? 'left' : this.signal === 'right' ? 'right' : 'the'
+        this.turnSignalled = this.signal !== 'off'
+      }
+      this.turnAccum += Math.abs(wrapAngle(p.yaw - this.lastTurnYaw))
     } else if (Math.abs(p.steer) < 0.1) {
       this.turnAccum = Math.max(0, this.turnAccum - dt * 0.6)
     }
     this.lastTurnYaw = p.yaw
-    if (this.turnAccum > 0.75) {
+    // 0.9 rad (~52 degrees) is a turn. Reporting once per increment meant a
+    // single 90-degree turn produced two faults.
+    if (this.turnAccum > 0.9 && now - this.lastTurnTime > 5) {
       this.turnAccum = 0
-      const side =
-        this.signal === 'left' ? 'left' : this.signal === 'right' ? 'right' : 'the'
-      this.instructor.handle({ type: 'turn', signalled: this.signal !== 'off', side })
+      this.lastTurnTime = now
+      this.instructor.handle({
+        type: 'turn',
+        signalled: this.turnSignalled,
+        side: this.turnSide,
+      })
     }
 
     // --- following distance ---
@@ -763,7 +847,15 @@ export class Game {
     if (p.speed > 1 && !this.seatbelt) this.instructor.handle({ type: 'seatbeltMissing' })
     if (p.speed > 2 && this.handbrake)
       this.instructor.handle({ type: 'handbrakeDriving' })
-    if (!this.world.isOnRoad(p.x, p.z)) this.instructor.handle({ type: 'offRoad' })
+
+    // Off the road. Needs real movement plus a grace period, otherwise
+    // clipping a kerb is reported instantly and repeatedly.
+    if (p.speed > 2 && !this.world.isDrivable(p.x, p.z)) {
+      this.offRoadTimer += dt
+      if (this.offRoadTimer > 1.2) this.instructor.handle({ type: 'offRoad' })
+    } else {
+      this.offRoadTimer = 0
+    }
 
     // --- parallel parking check ---
     this.checkParking(dt, road)
@@ -1084,24 +1176,139 @@ export class Game {
 
   /* -------------------------------- weather ------------------------------ */
 
+  /**
+   * Gradient sky dome with an integrated sun disc and glow.
+   *
+   * A flat `scene.background` colour reads as a cardboard backdrop: there is
+   * no horizon gradient and nothing for the car's paint and glass to reflect.
+   * This is a single BackSide sphere with one fragment shader - no extra draw
+   * calls beyond the one mesh, and no post-processing cost - and it doubles as
+   * the source for the environment map below.
+   */
+  private buildSky(): void {
+    // Radius chosen to sit inside every camera that renders this scene: the
+    // main camera's far plane is 600 and the mirror cameras' is 400, so 380
+    // keeps the sky visible in the rearview and wing mirrors as well.
+    const geometry = new THREE.SphereGeometry(380, 32, 20)
+    const material = new THREE.ShaderMaterial({
+      side: THREE.BackSide,
+      depthWrite: false,
+      uniforms: {
+        topColour: { value: new THREE.Color(0x2f6bb5) },
+        bottomColour: { value: new THREE.Color(0xcfe0ef) },
+        sunDir: { value: new THREE.Vector3(0, 1, 0) },
+        sunColour: { value: new THREE.Color(0xfff3d8) },
+        sunStrength: { value: 1 },
+      },
+      vertexShader: /* glsl */ `
+        varying vec3 vDir;
+        void main() {
+          vDir = position;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: /* glsl */ `
+        uniform vec3 topColour;
+        uniform vec3 bottomColour;
+        uniform vec3 sunDir;
+        uniform vec3 sunColour;
+        uniform float sunStrength;
+        varying vec3 vDir;
+
+        void main() {
+          vec3 dir = normalize(vDir);
+          float t = clamp(dir.y * 0.5 + 0.5, 0.0, 1.0);
+          // Squared-ish falloff keeps the gradient tight around the horizon,
+          // which is where the eye reads distance from.
+          vec3 col = mix(bottomColour, topColour, pow(t, 0.62));
+
+          float s = max(dot(dir, normalize(sunDir)), 0.0);
+          col += sunColour * pow(s, 1200.0) * 8.0 * sunStrength;   // disc
+          col += sunColour * pow(s, 22.0) * 0.45 * sunStrength;    // inner glow
+          col += sunColour * pow(s, 5.0) * 0.12 * sunStrength;     // wide haze
+
+          gl_FragColor = vec4(col, 1.0);
+        }
+      `,
+    })
+    this.sky = new THREE.Mesh(geometry, material)
+    this.sky.frustumCulled = false
+    this.sky.renderOrder = -1
+    this.scene.add(this.sky)
+    this.skyMaterial = material
+  }
+
+  /**
+   * Bake the current sky into an environment map for image-based lighting.
+   *
+   * Without this, metal and glass have nothing to reflect and read as flat
+   * plastic. `fromScene` renders the dome into a small prefiltered cube; it is
+   * cheap enough to redo whenever the atmosphere changes (in practice, once).
+   */
+  private refreshEnvironment(): void {
+    if (!this.envGen) return
+    const envScene = new THREE.Scene()
+    envScene.add(new THREE.Mesh(this.sky.geometry, this.skyMaterial))
+    const target = this.envGen.fromScene(envScene, 0, 0.1, 1000)
+    this.envTarget?.dispose()
+    this.envTarget = target
+    this.scene.environment = target.texture
+    // Kept low so the sun and hemisphere lights stay the key and fill; the
+    // environment contributes sheen and reflections rather than flat ambient.
+    this.scene.environmentIntensity = 0.32
+  }
+
   private applyAtmosphere(): void {
     const time = this.options.time
     const weather = this.options.weather
+    const overcast = weather !== 'clear'
 
-    const skyByTime: Record<TimeOfDay, Record<WeatherKind, number>> = {
+    // Horizon doubles as the fog colour so distant ground fades into the sky.
+    const horizonByTime: Record<TimeOfDay, Record<WeatherKind, number>> = {
       dawn: { clear: 0xf0b98a, fog: 0xc6b4a6, rain: 0x8b8790, snow: 0xd9d1d3 },
       day: { clear: 0xa9c9e8, fog: 0xb8bec4, rain: 0x8d99a6, snow: 0xd5dde4 },
       dusk: { clear: 0xe39a63, fog: 0xb0938a, rain: 0x7a7884, snow: 0xc7c0c4 },
-      night: { clear: 0x0a1018, fog: 0x0d1218, rain: 0x0b1016, snow: 0x141b24 },
+      night: { clear: 0x111a26, fog: 0x0d1218, rain: 0x0b1016, snow: 0x141b24 },
     }
-    const sky = skyByTime[time][weather]
+    const zenithByTime: Record<TimeOfDay, number> = {
+      dawn: 0x4a5f8f,
+      day: 0x2a63b4,
+      dusk: 0x393f74,
+      night: 0x05080f,
+    }
+    const sunDirByTime: Record<TimeOfDay, THREE.Vector3> = {
+      dawn: new THREE.Vector3(-0.86, 0.17, -0.48),
+      day: new THREE.Vector3(-0.44, 0.66, -0.61),
+      dusk: new THREE.Vector3(0.82, 0.14, -0.56),
+      night: new THREE.Vector3(-0.3, 0.45, -0.84), // moon
+    }
+    const sunTintByTime: Record<TimeOfDay, number> = {
+      dawn: 0xffd0a0,
+      day: 0xfff3d8,
+      dusk: 0xffb27a,
+      night: 0xd8e4ff,
+    }
 
+    const horizon = horizonByTime[time][weather]
     const bg = (this.scene.background as THREE.Color) ?? new THREE.Color()
-    bg.setHex(sky)
+    bg.setHex(horizon)
     this.scene.background = bg
 
+    // Cloud cover flattens the whole dome toward the horizon colour.
+    const zenith = new THREE.Color(zenithByTime[time])
+    if (overcast) zenith.lerp(new THREE.Color(horizon), 0.75)
+    const horizonColor = new THREE.Color(horizon)
+    if (overcast) horizonColor.lerp(zenith, 0.25)
+
+    const u = this.skyMaterial.uniforms
+    ;(u.topColour.value as THREE.Color).copy(zenith)
+    ;(u.bottomColour.value as THREE.Color).copy(horizonColor)
+    ;(u.sunColour.value as THREE.Color).setHex(sunTintByTime[time])
+    ;(u.sunDir.value as THREE.Vector3).copy(sunDirByTime[time]).normalize()
+    u.sunStrength.value = overcast ? 0.1 : time === 'night' ? 0.35 : 1
+
     const fog = this.scene.fog as THREE.Fog
-    fog.color.setHex(sky)
+    fog.color.setHex(horizon)
     if (weather === 'fog') {
       fog.near = 8
       fog.far = 70
@@ -1113,7 +1320,6 @@ export class Game {
       fog.far = 520
     }
 
-    const overcast = weather !== 'clear'
     switch (time) {
       case 'night':
         this.sun.intensity = 0.22
@@ -1143,6 +1349,8 @@ export class Game {
         this.fill.color.setHex(0xdfe8f5)
         this.renderer.toneMappingExposure = 1.18
     }
+
+    this.refreshEnvironment()
   }
 
   private buildPrecipitation(weather: WeatherKind): THREE.Points | null {
