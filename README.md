@@ -1,8 +1,16 @@
 # Alberta Drive
 
-A web game built with **TypeScript** and **[Three.js](https://threejs.org/)**, bundled with [Vite](https://vitejs.dev/).
+A browser-based **first-person 3D driving simulator** that teaches Alberta road
+rules and prepares players for the Class 7 learner knowledge test and the
+Class 5 road test.
 
-> Status: early scaffold — a road and a car. The game itself is still being defined.
+Built with **TypeScript** (strict) and **[Three.js](https://threejs.org/)**,
+bundled with [Vite](https://vitejs.dev/).
+
+> **Disclaimer:** Alberta Drive is an independent training aid. It is **not** an
+> official Government of Alberta test and is not affiliated with the Government
+> of Alberta. Always check the current _Alberta Driver's Guide_ for the rules
+> that apply on the road.
 
 ## Quick start
 
@@ -10,6 +18,9 @@ A web game built with **TypeScript** and **[Three.js](https://threejs.org/)**, b
 npm install      # once
 npm run dev      # dev server at http://localhost:5173
 ```
+
+Click the canvas to lock the mouse, then press `E` (ignition), `B` (seatbelt)
+and `Space` (release the parking brake) to drive away.
 
 ### All commands
 
@@ -23,65 +34,143 @@ npm run dev      # dev server at http://localhost:5173
 | `npm run format`       | Prettier — write formatted files                   |
 | `npm run format:check` | Prettier — check formatting only                   |
 
-## Tech stack
+## Controls
 
-- **Three.js** — scene graph, camera, materials, renderer
-- **TypeScript** (strict mode)
-- **Vite** — dev server and production bundler
-- **ESLint + Prettier** — linting and formatting
+Every control is remappable in **Settings → Controls** (stored in
+`localStorage`).
 
-Runtime dependencies are just `three`; everything else is dev tooling.
+| Action                                 | Default                  |
+| -------------------------------------- | ------------------------ |
+| Accelerate                             | `W`                      |
+| Brake / reverse                        | `S` (hold at rest for R) |
+| Steer                                  | `A` / `D`                |
+| Parking brake                          | `Space`                  |
+| Left / right signal                    | `Q` / `R`                |
+| Horn                                   | `H`                      |
+| Headlights / high beam                 | `L`                      |
+| Wipers                                 | `V`                      |
+| Ignition                               | `E`                      |
+| Seatbelt                               | `B`                      |
+| Change camera (seat / bonnet / follow) | `C`                      |
+| Recenter the view                      | `N`                      |
+| Recover vehicle (back on the road)     | `T`                      |
+| Pause                                  | `Esc`                    |
+| Look around                            | Mouse (pointer lock)     |
+
+Gamepads are supported: left stick steers, RT accelerates, LT brakes.
+
+## Modes
+
+- **Free Drive** — pick weather (clear / rain / snow / fog), time of day
+  (dawn / day / dusk / night) and traffic density; navigate to marked
+  destinations with no instructor.
+- **Lessons** — startup, stop signs, lane changes, parallel parking.
+- **Mock Road Test** — a Class 5-style route with live examiner instructions and
+  a scored evaluation report.
+- **Practice Knowledge Test** — randomized questions with per-item source notes
+  and explanations.
+
+## Features implemented
+
+- First-person cockpit with mouse-look head movement, shoulder checks, three
+  camera modes and a recenter key.
+- Functional cockpit: rotating steering wheel driven by the real steering
+  angle, digital cluster (km/h, RPM, gear, fuel, warning lamps), indicator
+  stalks, pedals, gear lever, handbrake, seatbelt, wipers, horn, headlights.
+- **Three live mirrors** (rearview + both wings) rendered to texture on
+  alternate frames; disabled on the Low graphics preset.
+- Custom bicycle-model vehicle dynamics: longitudinal/lateral decomposition,
+  grip-limited lateral damping (understeer), speed-sensitive steering,
+  automatic gearbox display, drag, rolling resistance, weight-transfer body
+  pitch/roll, collision response.
+- Surface grip varies with road vs. off-road and with weather
+  (clear / fog / rain / snow).
+- A built Alberta-style town: right-hand traffic, metric limits, Canadian
+  signage, signalised intersections, four-way stops, a school-zone 30 km/h
+  overlay, crosswalks, a railway crossing, a parking lot with a marked
+  parallel space, and a 100 km/h prairie highway.
+- AI traffic on three routes that obeys signals and stop signs, keeps
+  following distance and yields; pedestrians including a signalised crosswalk
+  crosser.
+- Instructor feedback engine driven by measurable game state (stop quality,
+  red/yellow lights, lane changes, shoulder checks, turns, signals, speed,
+  following gap, pedestrian yield, seatbelt, parking brake, off-road,
+  wrong-way, collisions), with Beginner / Intermediate / Exam assistance
+  levels and severity-weighted scoring.
+- Procedural Web Audio — engine, road/wind noise, indicator tick, horn, crash.
+- Weather and time-of-day lighting, rain/snow particles, fog, headlights.
+- Settings: graphics preset, volume, look sensitivity, field of view,
+  instructor level, traffic density, HUD style, full key remapping.
+- Progress, XP and achievements persisted in `localStorage`.
+
+## Known limitations
+
+Be aware of these; none of them are faked or hidden behind a dead button:
+
+- **Not implemented:** Chaos Mode, roundabouts/traffic circles, cyclists,
+  construction workers, emergency-vehicle priority, manual gearbox, reverse
+  (90°) parking lesson, highway on/off ramps, vehicle damage/deformation,
+  event replay, and a day/night cycle (time of day is chosen up front).
+- **Free Drive has no route planner** — only nearest-destination guidance.
+- **Knowledge test** is deliberately limited to questions with well-established
+  answers; it is not the official question bank.
+- **Scoring thresholds are indicative**, not official Alberta road-test criteria.
+- **AI traffic** follows fixed waypoint routes; it does not re-route around
+  obstructions.
+- Mirrors render every other frame to keep frame times down, so they are one
+  frame behind the main view.
+
+## Testing performed
+
+Automated, run before every commit:
+
+```bash
+npm run format:check && npm run lint && npm run typecheck && npm run build
+```
+
+All four pass. The production bundle is a single ~642 kB JS chunk (mostly
+Three.js); the size warning from Vite is expected.
+
+Manual checks completed in Chrome: menu → free drive → camera starts in the
+driver's seat → accelerate/brake/reverse → steering wheel matches input →
+speedometer tracks speed → pause/resume → quit to menu.
+
+**Not machine-tested:** mirrors, gauge legibility, the full mock road-test
+route, and frame rate on integrated graphics. Report anything that looks wrong.
 
 ## Project structure
 
 ```
-index.html               HTML shell — hosts the <canvas id="game">
-public/                  Static assets copied as-is (favicon, etc.)
+index.html               HTML shell — #app > canvas#game + div#ui
 src/
-  main.ts                Entry point: builds and renders the scene
-  styles.css             Fullscreen canvas + page reset
+  main.ts                Entry: mounts the UI over the canvas
+  styles.css             Menus, HUD and results styling
+  types.ts               Shared types, default settings and key bindings
   systems/
-    Input.ts             Keyboard + pointer state (held / just-pressed)
-  vite-env.d.ts          Vite client type reference
+    Input.ts             Keyboard, mouse-look and gamepad; remapping + storage
+  content/
+    alberta.ts           Disclaimer, signs, knowledge questions, lessons, achievements
+  ui/
+    UI.ts                All screens, HUD sync, settings and progress persistence
+  game/
+    Game.ts              Orchestrator: fixed-step loop, rules, examiner, weather, HUD
+    physics.ts           Vehicle dynamics and collision helpers
+    World.ts             Roads, intersections, signals, signage, scenery, queries
+    Vehicle.ts           Exterior, cockpit, wheels, gauges, lights, mirrors
+    CameraRig.ts         Cockpit / bonnet / follow cameras and mouse look
+    Traffic.ts           AI cars and pedestrians
+    Instructor.ts        Event handling, feedback text and scoring
+    Sound.ts             Procedural Web Audio engine
 ```
 
-`src/systems/Input.ts` is kept even though nothing calls it yet — Three.js
-provides no input handling, and the game will need steering/throttle controls.
+### Conventions
 
-## The scene
-
-Everything lives in `src/main.ts`:
-
-- **Road** — `PlaneGeometry(9, 120)` rotated flat on the X axis
-- **Car** — `BoxGeometry(2, 1, 4)` resting on the road at `y = 0.5`
-- **Camera** — perspective, elevated behind the car
-- **Lights** — one ambient + one directional, so surfaces shade as 3D
-
-Rendering runs on `renderer.setAnimationLoop(...)`, and the canvas is resized
-with the window.
-
-## Adding content
-
-```ts
-const mesh = new THREE.Mesh(
-  new THREE.BoxGeometry(1, 1, 1),
-  new THREE.MeshStandardMaterial({ color: 0xff0000 }),
-)
-scene.add(mesh)
-```
-
-As the scene grows, split it out of `main.ts` into its own module and keep
-`main.ts` to wiring only (renderer + camera + loop).
-
-## Conventions
-
-- **Formatting**: Prettier — no semicolons, single quotes, 90-col, trailing commas.
-- **Types**: `strict` TypeScript; `verbatimModuleSyntax` means type-only imports
-  use `import type { ... }`.
-- **Cleanup**: dispose Three.js resources you create (`.dispose()` on geometries,
-  materials, textures) when tearing them down.
-- **Input**: query via `Input` — `isDown()` for held keys, `justPressed()` for
-  one-frame edges. Edge state is cleared automatically each frame.
+- **Formatting**: Prettier — no semicolons, single quotes, trailing commas.
+- **Types**: `strict` TypeScript; `verbatimModuleSyntax` means type-only
+  imports use `import type { ... }`.
+- **Coordinates**: forward is `+Z` at yaw `0`; increasing yaw turns left;
+  `right = (-fz, 0, fx)`; traffic drives on the right.
+- **Cleanup**: dispose Three.js resources (`.dispose()`) when tearing down.
 
 ## Production build
 
